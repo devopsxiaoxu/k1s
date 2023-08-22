@@ -1,0 +1,824 @@
+#!/usr/bin/env bash
+##################################
+# 名称：kubernetes kubectl 扩展功能
+# 作者：许三多
+# 创建时间：2023/08/18
+# 最后修改时间：2023/08/18
+#################################
+version=1.0.0
+############参数###########
+# 资源名称
+resource=$1
+
+# 参数1,接受应用名称
+param01=$2
+
+# 动作类型
+action=$3
+
+# 扩展参数
+param02=$4
+
+# 扩展参数
+param03=$5
+
+# 扩展参数
+param04=$6
+
+# 命名空间
+nameSpace=${K1S_NS:="default"}
+[ -n "${K1N}" ] && nameSpace="${K1N}"
+
+#####################################
+# 镜像名称
+base_image=${K1S_IMAGE:="alpine:latest"}
+[ -n "${K1I}" ] && base_image="${K1I}"
+
+# 存储yaml路径
+savePath=${K1S_PATH:=$PWD}
+# 判断是否以 / 结尾，自动补全
+[[ ${savePath: -1} != "/" ]] && savePath="${savePath}/"
+[ -n "${K1P}" ] && savePath="${K1P}"
+
+# kubectl 
+k=kubectl
+###########################
+# 错误列表，用于删除
+err_list=(
+	"UnexpectedAdmissionError"
+	"Terminating"
+	"OutOfcpu"
+	"Evicted"
+)
+
+# action 列表
+action_list=(
+	"ls"
+	"list"
+	"desc"
+	"describe"
+	"y"
+	"yml"
+	"yaml"
+	"wide"
+	"w"
+	"e"
+	"exec"
+	"auto"
+	"delete"
+	"del"
+	"rm"
+	"log"
+	"logs"
+	"tail"
+	"tailf"
+	"like"
+)
+
+############内置函数#############
+
+# 判断结果状态
+alert() {
+	local val=$1
+	local ret=$?
+	if [[ ${ret} -eq 0 ]]; then
+		yello "${val} 成功"
+	else
+		red "${val} 失败"
+	fi
+}
+# 提示
+green() {
+	local val=$1
+	echo -e "\033[32m ${val} \033[0m"
+}
+# 禁止
+red() {
+	local val=$1
+	echo -e "\033[31m ${val} \033[0m"
+}
+# 警告
+yello() {
+	local val=$1
+	echo -e "\033[33m ${val} \033[0m"
+}
+
+blue() {
+	local val=$1
+	echo -e "\033[34m ${val} \033[0m"
+}
+# 青绿色
+cyan() {
+	local val=$1
+	echo -e "\033[36m ${val} \033[0m"
+}
+# retrun 1 is exist. return 0 no exist.
+in_array () {     
+	arr=$1; # 数组
+	param=$2; # 被判断的对象
+	shift
+	echo "${arr[@]}"
+    for elem in "${arr[@]}";
+    do		
+        [[ "$param" = "$elem" ]] && return 1;		
+    done;
+    return 0
+}
+
+help() {
+	scriptName=$0
+	scriptName=$(basename "${scriptName}")
+	local tools=(		
+		"--------------- ↓ ⚙ 操作公式 ↓ ---------------"		
+		"${scriptName} [resources] [资源名称] [action] [extend]"
+		"--------------- ↓ ☆ 特殊资源 ↓ ---------------"
+		"部署/重装:         ${scriptName} apply/a {资源名称}"
+		"进入容器:          ${scriptName} exec/auto,e {资源名称}"
+		"进入NODE:          ${scriptName} x/nsenter {节点名称}"
+		"清理:              ${scriptName} clean {资源名称}"
+		"---------- ↓ ☯ 资源列表(resources)  ↓ ----------"
+		"组件健康: 		componentstatuses / cs"
+		"配置管理资源: 	configmaps / cm"
+		"端点:		endpoints / ep"
+		"事件: 		events / ev"
+		"资源管理限制: 	limitranges / limits"
+		"命名空间: 		namespaces / ns"
+		"节点资源: 		nodes / node / no"
+		"声明持久卷: 	persistentvolumeclaims / pvc "
+		"持久卷: 		persistentvolumes / pv "
+		"Pod 资源: 		pods / po / ps "
+		"副本控制器: 	replicationcontrollers / rc "
+		"硬性资源限额: 	resourcequotas / quota "
+		"密钥存储: 		secrets / secret / sec "
+		"Service 资源: 	nodes / node "
+		"守护进程资源: 	daemonsets / ds "
+		"无状态控制器: 	deployments / deploy / d "
+		"副本集合资源: 	replicasets / rs "
+		"有状态控制器: 	statefulsets / sts "
+		"水平自动扩缩器: 	horizontalpodautoscalers / hpa "
+		"定时任务器: 	cronjobs / cj "
+		"一次性任务器: 	jobs / job "
+		"Ingresses资源: 	ingresses / ing "
+		"Ingress 分类器: 	ingressclasses / ingc "
+		"RBAC 集群角色绑定:	clusterrolebindings / crb "
+		"RBAC 服务帐号: 	serviceaccounts / sa "
+		"RBAC 集群角色: 	clusterroles / cr "
+		"RBAC 角色绑定: 	rolebindings / rb "
+		"RBAC 角色: 	roles / ro "
+		"--------------- ↓ 🛠 动作(Action) ↓ ---------------"
+		"显示列表: 		list / ls"
+		"查看详情: 		describe / desc"
+		"查看 YAML: 	yaml / yml / y"
+		"查看更多信息: 	wide / w"
+		"进入容器操作: 	exec / auto / e"
+		"删除资源操作: 	delete / del / rm"
+		"日志操作: 		logs / log"
+		"最近日志: 		tail"
+		"监听日志: 		tailf"
+		"模糊查找: 		like"		
+		"编辑 YAML: 	edit"		
+		"--------------- ↓ ☀ 实例(Example) ↓ ---------------"
+		"查看 pod 列表: 			${scriptName} po"
+		"查看 pod 详情: 			${scriptName} po kube-pod-xxx desc"
+		"查看 pod 日志: 			${scriptName} po kube-pod-xxx log"
+		"查看 pod 日志(先前日志): 		${scriptName} po kube-pod-xxx log p"
+		"查看 pod 日志(c): 			${scriptName} po kube-pod-xxx log client (client 表示容器名称)"
+		"查看 pod 日志(c,先前日志):		${scriptName} po kube-pod-xxx log p client (client 表示容器名称)"
+		"查看 pod 最近日志: 		${scriptName} po kube-pod-xxx log 10"		
+		"监听 pod 日志: 			${scriptName} po kube-pod-xxx tailf"
+		"进入 pod 容器: 			${scriptName} po kube-pod-xxx exec"
+		"进入 pod 容器(c): 			${scriptName} po kube-pod-xxx exec client (client 表示容器名称)"
+		"编辑 YAML:				${scriptName} po kube-pod-xxx edit"
+		"删除 pod:				${scriptName} po kube-pod-xxx del"
+		"强制删除 pod:			${scriptName} po kube-pod-xxx rm"
+		"调试 node:			${scriptName} x kube-node-xxx"
+		"--------------- ↓ ❤ 帮助(Help) ↓ ---------------"
+		"查看帮助：         ${scriptName} help|h"
+	)
+	local set_env=(
+		"1. 设置YAML路径的环境变量方式: export K1S_PATH=/home/ 或 export K1P=/home/, 默认为 当前目录"
+		"2. 设置命名空间的环境变量方式: export K1S_NS=default 或 export K1N=default, 默认为 default"
+		"3. 设置基础镜像: export K1S_IMAGE=alpine:latest 或 export K1I=alpine:latest,默认为 alpine:latest"
+	)
+	local envs=(
+		"1. 当前操作的路径：${savePath}"
+		"2. 当前操作的空间名：${nameSpace}"
+		"3. 当前基础镜像：${base_image}"
+	)
+	cat <<EOF
+   _   _   _  
+  / \ / \ / \ 
+ ( k | 1 | s )
+  \_/ \_/ \_/ 
+  	by 许三多(奋斗中的小许)
+   so easy, so fast.
+ version: ${version}
+EOF
+	local i=0
+	for name in "${tools[@]}"; do
+		((i++)) # 自增
+		if [[ ${i} -le 9 ]]; then
+			inc="0${i}"
+		else
+			inc=${i}
+		fi
+		line_count=$(echo "${name}" | grep -c "↓")
+		if [ "${line_count}" -gt 0 ]; then
+			i=0
+			yello "${name}"
+		else
+			cyan "${inc}. ${name}"
+		fi
+
+	done	
+	echo "SET ENVIRONMENT:"
+	for name in "${set_env[@]}"; do
+		green "${name}"
+	done
+	echo "CURRENT:"
+	for name in "${envs[@]}"; do
+		yello "${name}"
+	done
+}
+
+tip() {
+	local envs=(
+		"1. 当前操作的路径：${savePath}"
+		"2. 当前操作的空间名：${nameSpace}"
+	)
+	for name in "${set_env[@]}"; do
+		green "${name}"
+	done
+}
+# 不支持提示
+nosupport() {
+	op=$1
+	red "当前资源不支持【${op}】操作"
+}
+# 是否继续函数
+IsContinue() {
+	local msg=$1
+	while true; do
+		read -r -p "${msg}" ok
+		case "${ok}" in
+		[Yy])
+			break
+			;;
+		[Nn])
+			echo "安全退出"
+			exit 0
+			;;
+		esac
+	done
+}
+
+# 用于YES还是NO，YES返回0，NO返回1
+IsYesNo() {
+	local msg=$1
+	while true; do
+		read -r -p "${msg}" ok
+		case "${ok}" in
+		[Yy])
+			return 0
+			;;
+		[Nn])
+			return 1
+			;;
+		esac
+	done
+}
+
+# 临时创建 nsenter 容器
+execTemporaryPod() {
+    node=$1
+    if [ -z "${node}" ];then 
+        red "Please input your node name."
+        exit 0
+    fi
+    exist=$($k get node|grep -wc "${node}")
+    if [ "${exist}" -eq 0 ];then
+        red "The node does not exist"
+        exit 0
+    fi
+    cmd='[ "nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "bash"]'
+    overrides="$(
+        cat <<EOT
+{
+  "spec": {
+    "enableServiceLinks": false,
+    "nodeName": "$node",
+    "hostPID": true,
+    "hostNetwork": true,
+    "containers": [
+      {
+        "securityContext": {
+          "privileged": true
+        },
+        "image": "${base_image}",
+        "name": "nsenter",
+        "stdin": true,
+        "stdinOnce": true,
+        "tty": true,
+        "command": $cmd
+      }
+    ],
+    "tolerations": [
+      {
+        "operator": "Exists"
+      }
+    ]
+  }
+}
+EOT
+    )"
+    # pod="kube-nodeshell-$(env LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 6)"
+    pod="kube-nodeshell-$(uuidgen)"
+    yello "Pod: ${pod}"
+    green "Connecting $node ..."
+    $k run --image="${base_image}" --restart=Never --rm --overrides="$overrides" -it "${pod}"
+	if [ $? -ne 0 ];then 
+		# 判断 pod 是否存在
+		if $k get pod "${pod}" >/dev/null 2>&1; then			
+			red "###################### ERROR INFOMATION #######################"
+			# 分析错误
+			events_msg=$($k describe pod "${pod}" |awk '/Events:/,0')
+			echo "${events_msg}"
+			error_msg=$(echo "$events_msg" | grep -iE 'rpc error|i/o timeout')
+			if [ -n "$error_msg" ]; then
+				yello "如果出现 pull image <${base_image}>: rpc error,说明 node:${node} 没有外网导致的"
+				green "++++++++++++++ TIP +++++++++++++++"
+				cyan "可以设置内网镜像: export K1S_IMAGE=hub.local.io/alpine:latest"
+			fi
+			# 最后删除 pod
+			$k delete pod "${pod}"
+		fi
+    fi
+}
+
+# 判断当前 kubectl 是否小于1.18版本。返回 1则大于等于1.18，0则小于1.18
+IsGtK8sVersion118() {
+	version=$($k version | sed -r "s/.*(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/g" | sed -n '1p')
+	versionNumber=$(echo "${version}" | sed -r "s/[v\.]//g")
+	versionNumber=${versionNumber:0:4}
+	if [ "${versionNumber}" -ge 1180 ]; then
+		return 1
+	fi
+	return 0
+}
+
+# 判断是否支持 action
+check_action() {
+	in_action=$1	
+	exist=0
+	for elem in "${action_list[@]}";do
+		[[ ${elem} = "${in_action}" ]] && exist=1
+	done
+	if [ ${exist} -eq 0 ];then
+		red "This【${in_action}】action is not supported"
+		# 仅支持以下 action 操作。
+		cyan "Support list: ${action_list[*]}"
+	fi
+}
+
+# 进入容器内部操作
+autoExecPod() {
+	param01=$1 # pods 名称
+	containerName=$2 # 容器名称
+	cyan "++++++++++++++++ 进入 ${param01} pod 容器 ++++++++++++++++"
+	# 从名称中自动获取 pod 名称
+	podsName=$($k get pods -n "${nameSpace}" | grep "${param01}" | sed -n '1p' | awk '{print $1}')
+	if [ -z "${podsName}" ]; then
+		red "获取 POD 名称失败，请检查或使用 exec-pod 方式。"
+		exit 1
+	fi
+	# 名称不相等，则提示自动获取的名称。
+	if [ "${podsName}" != "${param01}" ];then
+		green "自动获取第一个POD名称: ${podsName}"
+	fi
+	if [ -n "${containerName}" ];then 
+		green "进入 ContainerName: ${containerName}"
+		$k -n "${nameSpace}" exec -it -c "${containerName}" "${podsName}" /bin/bash
+		# 如果出错的话，尝试另一种方式
+		if [ $? -ne 0 ]; then
+			green "bash 方式失败，正在尝试 sh 方式进入容器："
+			$k -n "${nameSpace}" exec -it -c "${containerName}" "${podsName}" sh
+		fi
+	else
+		green "进入 ContainerName: 默认第一个容器"
+		$k -n "${nameSpace}" exec -it  "${podsName}" /bin/bash
+		# 如果出错的话，尝试另一种方式
+		if [ $? -ne 0 ]; then
+			green "bash 方式失败，正在尝试 sh 方式进入容器："
+			$k -n "${nameSpace}" exec -it "${podsName}" sh
+		fi
+	fi	
+}
+
+
+#########################
+check_apply() {
+	# 0. 检查	
+	## 检查设置路径
+	if [ -z "${savePath}" ]; then
+		red "请设置的YAML路径的环境变量！"
+		exit 1
+	fi
+
+	## 路径是否有效
+	if [ ! -d "${savePath}" ]; then
+		red "${savePath} 路径不存在，请检查"
+		exit 1
+	fi
+
+	green "当前设置的YAML路径: ${savePath}"
+
+	## 检查输入参数
+	if [ -z "${param01}" ]; then
+		red "请输入您的应用名称！"
+		exit 1
+	fi
+
+	## 检查应用文件是否存在
+	### 判断是否存在后缀，如果存在后缀，就不添加后缀
+	gapCount=$(echo "${param01}" | grep -c "\.")
+	if [ "${gapCount}" -gt 0 ]; then
+		fullFile="${savePath}${param01}"
+		param01=$(echo "${param01}" | cut -d . -f1)
+	else
+		# 默认添加 .yaml 后缀
+		fullFile="${savePath}${param01}.yaml"
+	fi
+
+	if [ ! -f "${fullFile}" ]; then
+		red "${fullFile} 文件不存在，请检查"
+		exit 1
+	fi
+}
+# 新部署
+apply() {
+	tip
+	check_apply
+	$k get -f "${fullFile}" &>/dev/null
+	if [ $? -eq 1 ]; then
+		cyan "+++++++++++++++++ 新部署 +++++++++++++++++"
+		IsContinue "是否准备好新应用部署：【${param01}】(Y/N):"
+	else
+		cyan "+++++++++++++++++ 重新部署 +++++++++++++++++"
+		$k diff -f "${fullFile}"
+		IsContinue "观察当前 YAML 的差异, 是否准备好重新部署应用：【${param01}】(Y/N):"
+	fi
+
+	# 模拟运行是否可行
+	IsGtK8sVersion118
+	ret=$?
+	if [ $ret -eq 1 ]; then
+		$k apply -f "${fullFile}" --dry-run=client
+		alert "client 端:模拟运行"
+		$k apply -f "${fullFile}" --dry-run=server
+		alert "server 端:模拟运行"
+	else
+		$k apply -f "${fullFile}" --dry-run
+		alert "client 端，模拟运行"
+		$k apply -f "${fullFile}" --server-dry-run
+		alert "server 端，模拟运行"
+	fi
+
+	# 真实运行
+	IsContinue "您正在准备运行部署应用名为:【${param01}】,是否确认(Y/N):"
+	$k apply -f "${fullFile}"
+
+	# 5. 观察应用状态
+	$k get -f "${fullFile}"
+
+	# 6. 查看应用详情
+	IsContinue "是否查看应用:【${param01}】 的部署详情(Y/N):"
+	$k describe -f "${fullFile}"
+}
+
+# 资源操作大集合
+k1s_resource_action() {
+	# 资源名称
+	resouce_name=$1
+	# 参数01，即具体名称，如 pod 名称,还兼容 wide
+	param_name=$2
+	# 动作名称，默认为 list	
+	action_name=$3
+	action_name=${action_name:="list"}
+	# 扩展参数
+	param05=$4
+	# 扩展参数
+	param06=$5
+	# 扩展参数
+	param07=$6	
+	# 输出基础信息
+	yello "######## namespace:${nameSpace} # resouce-name:${resouce_name} # action:${action_name} # param_name:${param_name} ########"
+	# 检查 Action 是否有效
+	check_action "${action_name}"
+
+	# 分支判断
+	case "X${action_name}" in
+	"Xlist" | "Xwide" | "Xw") # 获取资源列表
+		if [ -z "${param_name}" ];then
+			$k -n ${nameSpace} get "${resouce_name}"
+		elif [ "${param_name}" = "wide" ] || [ "${param_name}" = "w" ]; then 
+			$k -n ${nameSpace} get "${resouce_name}" -o wide
+		elif [ "${action_name}" = "wide" ] || [ "${action_name}" = "w" ]; then
+			$k -n ${nameSpace} get "${resouce_name}" "${param_name}" -o wide
+		else 
+			$k -n ${nameSpace} get "${resouce_name}" "${param_name}"
+		fi
+	;;
+	"Xlike") # 模糊查找
+		$k -n ${nameSpace} get "${resouce_name}" |grep -i "${param_name}"
+	;;
+	"Xdescribe" | "Xdesc") # 查看资源详情
+		$k -n ${nameSpace} describe "${resouce_name}" "${param_name}"
+	;;
+	"Xyaml" | "Xyml" | "Xy") # 查看资源YAML
+		$k -n ${nameSpace} get "${resouce_name}" "${param_name}" -o yaml
+	;;
+	"Xexec"| "Xe" | "Xauto") # 进入容器，只限 pods
+		if [ "${resouce_name}" = "pods" ];then
+			autoExecPod "${param_name}" "${param05}"
+		else
+			nosupport "${action_name}"
+			exit 0
+		fi
+	;;
+	"Xdelete" | "Xdel")
+		no_support_resource=("nodes" "clean")
+		if echo "${no_support_resource[@]}" | grep -qw "${resouce_name}"; then
+			nosupport "${action_name}"
+			exit 0
+		fi
+		IsContinue "当前是【delete】请谨慎操作,是否删除资源【${param_name}】(Y/N):"
+		$k -n ${nameSpace} delete "${resouce_name}" "${param_name}"
+		if [ $? -eq 0 ]; then 
+			green "资源【${param_name}】 删除成功"
+		else 
+			red "资源【${param_name}】 删除失败"
+		fi
+	;;
+	"Xrm") # 强制删除
+		no_support_resource=("nodes" "clean")
+		if echo "${no_support_resource[@]}" | grep -qw "${resouce_name}"; then
+			nosupport "${action_name}"
+			exit 0
+		fi
+		IsContinue "当前是【 强制删除 rm 】请谨慎操作,是否强制删除资源【${param_name}】(Y/N):"
+		$k -n ${nameSpace} delete "${resouce_name}" "${param_name}" --grace-period=0 --force
+		if [ $? -eq 0 ]; then 
+			green "资源【${param_name}】 删除成功"
+		else 
+			red "资源【${param_name}】 删除失败"
+		fi
+	;;
+	"Xlogs"|"Xlog") # 输出全部日志
+		# previous
+		previous=${param05}		
+		containerName=${param06}		
+		if [ -n "$(echo "${previous}"| sed -n "/^[0-9]\+$/p")" ];then # 表示数字
+			showNumber=${previous}
+			$k -n ${nameSpace} logs --tail="${showNumber}" "${param_name}"
+			[[ $? -ne 0 ]] && exit 0
+			cyan "++++++++++++++++++++++++++ 显示最近 ${showNumber} 条数据 ++++++++++++++++++++++++++ "
+		elif [ "${previous}" = "p" ];then
+			cyan "正在查看先前日志:"
+			# 如果 param06 是数字则将 containerName 设置为空
+			if [ -n "$(echo "${param06}"| sed -n "/^[0-9]\+$/p")" ];then # 表示数字
+				containerName=""
+			fi
+			# 如果没有 container 则 param06 判断是否数字
+			if [ -z "${containerName}" ];then 
+				showNumber=${param06}
+				if [ -n "$(echo "${showNumber}"| sed -n "/^[0-9]\+$/p")" ];then # 表示数字
+					$k -n ${nameSpace} logs -p --tail="${showNumber}" "${param_name}"
+					[[ $? -ne 0 ]] && exit 0
+					cyan "++++++++++++++++++++++++++ 显示最近 ${showNumber} 条数据(previous logs) ++++++++++++++++++++++++++ "
+				else
+					$k -n ${nameSpace} logs -p "${param_name}"
+					[[ $? -ne 0 ]] && exit 0
+				fi
+			else 
+				showNumber=${param07}
+				if [ -n "$(echo "${showNumber}"| sed -n "/^[0-9]\+$/p")" ];then # 表示数字
+					$k -n ${nameSpace} logs -p -c "${containerName}" --tail="${showNumber}" "${param_name}"
+					[[ $? -ne 0 ]] && exit 0
+					cyan "++++++++++++++++++++++++++ 显示最近 ${showNumber} 条数据(previous logs) ++++++++++++++++++++++++++ "
+				else
+					$k -n ${nameSpace} logs -p -c "${containerName}" "${param_name}"
+					[[ $? -ne 0 ]] && exit 0
+				fi
+			fi
+			cyan "+++++++++++++++++++ 正在查看容器先前(previous)的日志 +++++++++++++++++++"
+		else
+			showNumber=${param06}
+			containerName=${param05}
+			if [ -z "${containerName}" ];then 
+				if [ -n "$(echo "${showNumber}"| sed -n "/^[0-9]\+$/p")" ];then # 表示数字
+					$k -n ${nameSpace} logs --tail="${showNumber}" "${param_name}"
+					cyan "++++++++++++++++++++++++++ 显示最近 ${showNumber} 条数据 ++++++++++++++++++++++++++ "
+				else
+					$k -n ${nameSpace} logs "${param_name}"
+				fi				
+			else 
+				if [ -n "$(echo "${showNumber}"| sed -n "/^[0-9]\+$/p")" ];then # 表示数字
+					$k -n ${nameSpace} logs -c "${containerName}" --tail="${showNumber}" "${param_name}"
+					cyan "++++++++++++++++++++++++++ 显示最近 ${showNumber} 条数据 ++++++++++++++++++++++++++ "
+				else
+					$k -n ${nameSpace} logs -c "${containerName}" "${param_name}"
+				fi			
+			fi
+		fi
+	;;
+	"Xtail") # 输出最近的日志				
+		showNumber=${param05:=50}
+		containerName=${param06}
+		# 当 param05 传过来的不是纯数字则表示是 container，需要处理一下
+		if [ -z "$(echo ${showNumber}| sed -n "/^[0-9]\+$/p")" ];then # 表示非数字
+			containerName="${param05}"
+			showNumber=50
+		fi
+		if [ -z "${containerName}" ];then
+			$k -n ${nameSpace} logs --tail=${showNumber} "${param_name}"
+			[[ $? -ne 0 ]] && exit 0
+		else
+			green "正在查看:【${containerName}】Container Name 日志"
+			$k -n ${nameSpace} logs --tail=${showNumber} -c "${containerName}" "${param_name}"
+			[[ $? -ne 0 ]] && exit 0
+		fi		
+		cyan "++++++++++++++++++++++++++ 显示最近 ${showNumber} 条数据 ++++++++++++++++++++++++++ "
+	;;
+	"Xtailf") # 动态监听日志	
+		# -c container
+		containerName=${param05}
+		cyan "+++++++++++++++++ 动态监听日志 +++++++++++++++++"
+		if [ -n "${containerName}" ];then 
+			green "正在查看:【${containerName}】Container Name 日志"
+			$k -n ${nameSpace} logs -f --tail=15 -c ${containerName} "${param_name}"
+			[[ $? -ne 0 ]] && exit 0
+		else
+			$k -n ${nameSpace} logs -f --tail=15 "${param_name}"
+			[[ $? -ne 0 ]] && exit 0
+		fi
+	;;	
+	"Xedit") # 编辑 YAML	
+		cyan "+++++++++++++++++ 编辑 ${param_name} YAML +++++++++++++++++"
+		$k -n ${nameSpace} edit "${resouce_name}" "${param_name}"
+	;;	
+	esac
+}
+
+
+# 清理垃圾
+clean() {
+	if [ -n "${param01}" ]; then
+		# local errMsg="UnexpectedAdmissionError"
+		for errMsg in "${err_list[@]}"; do
+			IsYesNo "是否查找 ${errMsg} 错误的POD，确认(Y/N):"
+			local result=$?
+			if [ ${result} -eq 0 ]; then
+				count=$($k get pods -n "${param01}" | grep -c "${errMsg}")
+				if [ "${count}" -gt 0 ]; then
+					IsYesNo "空间：${param01}，错误：${errMsg}，共: ${count} 条数，是否需要清理(Y/N):"
+					result=$?
+					if [ ${result} -eq 0 ]; then
+						green "开始清理..."
+						local i=0
+						for errPodsName in $($k get pods -n "${param01}" | grep "${errMsg}" | awk '{print $1}'); do
+							((i++))
+							red "正在处理: ${i}/${count} ${errPodsName}"
+							$k delete pods -n "${param01}" "${errPodsName}" --grace-period=0 --force
+						done
+					fi
+				else
+					green "空间：${param01}，错误：${errMsg}，共: 0 条数"
+				fi
+			fi
+		done
+	else
+		# local errMsg="UnexpectedAdmissionError"
+		for errMsg in "${err_list[@]}"; do
+			IsYesNo "查找所有空间下的 ${errMsg} 错误的 POD,确认(Y/N):"
+			local result=$?
+			if [ ${result} -eq 0 ]; then
+				green "正在统计不同空间下的 ${errMsg} 数据："
+				$k get pods -A | grep "${errMsg}" | awk '{print $1}' | uniq -c
+
+			fi
+		done
+		yello "若想删除以上统计的错误,则使用 k1s clean <空间名称>"
+	fi
+}
+
+main() {	
+	## 资源名称
+	in_resource=""
+	case "X${resource}" in
+	"Xapply" | "Xp")
+		apply
+		;;
+	"Xx" | "Xnsenter") # node-shell
+		execTemporaryPod "$2"
+		;;
+	"Xexec" | "Xauto" | "Xe")
+		autoExecPod "$2" "$3"
+		;;
+	"Xcs" | "Xcomponentstatuses")
+		in_resource="componentstatuses"
+		;;
+	"Xconfigmaps" | "Xcm")
+		in_resource="configmaps"
+		;;
+	"Xendpoints" | "Xep")
+		in_resource="endpoints"
+		;;
+	"Xevents" | "Xev")
+		in_resource="events"
+		;;
+	"Xlimitranges" | "Xlimits" | "Xlimit")
+		in_resource="limitranges"
+		;;
+	"Xnamespaces" | "Xns")
+		in_resource="namespaces"
+		;;	
+	"Xnodes" | "Xnode" | "Xno")
+		in_resource="nodes"
+		;;
+	"Xpersistentvolumeclaims" | "Xpvc")
+		in_resource="persistentvolumeclaims"
+		;;
+	"Xpersistentvolumes" | "Xpv")
+		in_resource="persistentvolumes"
+		;;
+	"Xpods" | "Xpo" | "Xps")
+		in_resource="pods"
+		;;
+	"Xreplicationcontrollers" | "Xrc")
+		in_resource="replicationcontrollers"		
+		;;
+	"Xsecrets" | "Xsecret" | "Xsec")
+		in_resource="secrets"		
+		;;
+	"Xservices" | "Xsvc")
+		in_resource="services"		
+		;;
+	"Xdaemonsets" | "Xds")
+		in_resource="daemonsets"		
+		;;
+	"Xdeployments" | "Xdeploy" | "Xd")
+		in_resource="deployments"		
+		;;
+	"Xreplicasets" | "Xrs")
+		in_resource="replicasets"		
+		;;
+	"Xstatefulsets" | "Xsts")
+		in_resource="statefulsets"		
+		;;
+	"Xhorizontalpodautoscalers" | "Xhpa")
+		in_resource="horizontalpodautoscalers"		
+		;;
+	"Xcronjobs" | "Xcj")
+		in_resource="cronjobs"		
+		;;
+	"Xjobs" | "Xjob")
+		in_resource="jobs"		
+		;;
+	"Xingresses" | "Xing")
+		in_resource="ingresses"		
+		;;
+	"Xingressclasses" | "Xingc")
+		in_resource="ingressclasses"
+		;;
+	"Xclusterrolebindings" | "Xcrb")
+		in_resource="clusterrolebindings"
+		;;
+	"Xserviceaccounts" | "Xsa")
+		in_resource="serviceaccounts"		
+		;;
+	"Xclusterroles" | "Xcr")
+		in_resource="clusterroles"
+		;;
+	"Xrolebindings" | "Xrb")
+		in_resource="rolebindings"
+		;;
+	"Xroles" | "Xro")
+		in_resource="roles"		
+		;;
+	"Xall")
+		$k -n "${nameSpace}" get all
+		;;
+	"Xclean" | "Xc")
+		clean
+		;;
+	*)
+		help
+		;;
+	esac
+	# 拼接成完整的命令
+	if [ "${in_resource}" != "" ]; then 
+		# 资源名称 是否是某空间下的资源 参数01 动作名称 		
+		k1s_resource_action "${in_resource}" ${param01} ${action} ${param02} ${param03} ${param04}
+	fi	
+}
+main "$@"
